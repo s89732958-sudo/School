@@ -1,0 +1,6 @@
+{
+  "name": "Future Ready Academy",
+  "description": "Future Ready Academy - Modern education web app for UP Board Class 9 and 10 students combining academic excellence with future-ready skills in AI, coding, and technology.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

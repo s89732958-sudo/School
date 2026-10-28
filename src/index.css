@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background-color: #040706;
+    color: #e2e8f0;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', 'Plus Jakarta Sans', sans-serif;
+  }
+}
+
+/* Custom subtle glow and border styles */
+.emerald-glow {
+  box-shadow: 0 0 35px -5px rgba(16, 185, 129, 0.15);
+}
+
+.emerald-glow-sm {
+  box-shadow: 0 0 20px -3px rgba(16, 185, 129, 0.12);
+}
+
+.gold-glow-sm {
+  box-shadow: 0 0 20px -3px rgba(212, 175, 55, 0.15);
+}
+
+.grid-bg-pattern {
+  background-size: 32px 32px;
+  background-image: 
+    linear-gradient(to right, rgba(16, 185, 129, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(16, 185, 129, 0.04) 1px, transparent 1px);
+}
