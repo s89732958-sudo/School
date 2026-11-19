@@ -12,7 +12,7 @@ if(type==='apply')html='<h2>Education support application</h2><form onsubmit="ap
 if(type==='donate')html='<h2>Donate to education</h2><form onsubmit="pay(event,'+id+')"><input name="donor_name" placeholder="Your name" required><input name="amount" type="number" min="10" max="1000000" value="500" required><input name="message" placeholder="Message (optional)"><button>Continue to payment</button></form>';
 $('#formArea').innerHTML=html}
 function hide(){$('#modal').style.display='none'}
-async function login(e){e.preventDefault();try{let d=await api('/login',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});token=d.token;localStorage.setItem('fund_token',token);hide();if(d.role==='admin')adminLoad();alert('Signed in')}catch(x){alert(x.message)}}
+async function login(e){e.preventDefault();try{let d=await api('/login',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});token=d.token;localStorage.setItem('fund_token',token);hide();if(d.role==='admin'){window.location.href='/admin.html';return}alert('Signed in')}catch(x){alert(x.message)}}
 async function register(e){e.preventDefault();try{let d=await api('/register',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});token=d.token;localStorage.setItem('fund_token',token);hide();alert('Account created')}catch(x){alert(x.message)}}
 async function apply(e){e.preventDefault();if(!token)return alert('Please sign in first');try{let d=await api('/campaigns',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});hide();alert(d.message)}catch(x){alert(x.message)}}
 async function donate(id){if(!token){show('login');return}show('donate',id)}
