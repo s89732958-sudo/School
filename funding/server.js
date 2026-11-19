@@ -1,0 +1,38 @@
+require("dotenv").config();
+const express=require("express"), helmet=require("helmet"), rateLimit=require("express-rate-limit");
+const bcrypt=require("bcryptjs"), jwt=require("jsonwebtoken"), Database=require("better-sqlite3");
+const Razorpay=require("razorpay"), crypto=require("crypto"), fs=require("fs"), path=require("path");
+const app=express(), PORT=+(process.env.PORT||3000), SECRET=process.env.JWT_SECRET;
+if(!SECRET||SECRET.length<32) throw new Error("Set JWT_SECRET (32+ characters) in .env");
+const dir=path.join(__dirname,"data"); fs.mkdirSync(dir,{recursive:true});
+const db=new Database(path.join(dir,"funding.sqlite")); db.pragma("journal_mode=WAL");
+db.exec(`
+CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT NOT NULL,email TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,role TEXT DEFAULT 'donor');
+CREATE TABLE IF NOT EXISTS campaigns(id INTEGER PRIMARY KEY,title TEXT NOT NULL,student_name TEXT NOT NULL,class_name TEXT,city TEXT,story TEXT NOT NULL,goal INTEGER NOT NULL,raised INTEGER DEFAULT 0,image TEXT,status TEXT DEFAULT 'pending',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE TABLE IF NOT EXISTS donations(id INTEGER PRIMARY KEY,campaign_id INTEGER NOT NULL,user_id INTEGER,donor_name TEXT NOT NULL,amount INTEGER NOT NULL,message TEXT,order_id TEXT,payment_id TEXT UNIQUE,status TEXT DEFAULT 'pending',created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+`);
+const adminEmail=(process.env.ADMIN_EMAIL||"").toLowerCase();
+if(adminEmail&&process.env.ADMIN_PASSWORD&&!db.prepare("SELECT id FROM users WHERE email=?").get(adminEmail))
+ db.prepare("INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,'admin')").run(process.env.ADMIN_NAME||"Admin",adminEmail,bcrypt.hashSync(process.env.ADMIN_PASSWORD,12));
+const pay=process.env.RAZORPAY_KEY_ID&&process.env.RAZORPAY_KEY_SECRET?new Razorpay({key_id:process.env.RAZORPAY_KEY_ID,key_secret:process.env.RAZORPAY_KEY_SECRET}):null;
+app.use(helmet({contentSecurityPolicy:false}));
+app.use("/api/webhooks/razorpay",express.raw({type:"application/json"}));
+app.use(express.json({limit:"1mb"}));
+app.use("/api",rateLimit({windowMs:900000,limit:150}));
+app.use(express.static(path.join(__dirname,"public")));
+const clean=(v,n=2000)=>String(v??"").trim().slice(0,n);
+function auth(req,res,next){try{req.user=jwt.verify((req.headers.authorization||"").replace(/^Bearer /i,""),SECRET);next()}catch{res.status(401).json({error:"Please sign in"})}}
+function admin(req,res,next){if(req.user?.role!=="admin")return res.status(403).json({error:"Admin only"});next()}
+app.get("/api/health",(q,s)=>s.json({ok:true}));
+app.get("/api/campaigns",(q,s)=>s.json(db.prepare("SELECT * FROM campaigns WHERE status='approved' ORDER BY id DESC").all()));
+app.post("/api/register",async(q,s)=>{let {name,email,password}=q.body;name=clean(name,100);email=clean(email,180).toLowerCase();if(!name||!/^\S+@\S+\.\S+$/.test(email)||String(password||"").length<10)return s.status(400).json({error:"Valid name/email and 10+ character password required"});try{let r=db.prepare("INSERT INTO users(name,email,password_hash) VALUES(?,?,?)").run(name,email,await bcrypt.hash(password,12));s.status(201).json({token:jwt.sign({id:r.lastInsertRowid,name,email,role:"donor"},SECRET,{expiresIn:"7d"})})}catch{s.status(409).json({error:"Email already registered"})}});
+app.post("/api/login",async(q,s)=>{let email=clean(q.body.email,180).toLowerCase(),u=db.prepare("SELECT * FROM users WHERE email=?").get(email);if(!u||!await bcrypt.compare(String(q.body.password||""),u.password_hash))return s.status(401).json({error:"Invalid credentials"});s.json({token:jwt.sign({id:u.id,name:u.name,email:u.email,role:u.role},SECRET,{expiresIn:"7d"}),role:u.role,name:u.name})});
+app.post("/api/campaigns",auth,(q,s)=>{let b=q.body,goal=Number(b.goal),title=clean(b.title,140),student=clean(b.student_name,100),story=clean(b.story,2500);if(!title||!student||story.length<30||!Number.isSafeInteger(goal)||goal<500||goal>10000000)return s.status(400).json({error:"Check required fields and goal (₹500–₹1 crore)"});let r=db.prepare("INSERT INTO campaigns(title,student_name,class_name,city,story,goal,image) VALUES(?,?,?,?,?,?,?)").run(title,student,clean(b.class_name,80),clean(b.city,100),story,goal,clean(b.image,500));s.status(201).json({id:r.lastInsertRowid,message:"Application submitted for verification"})});
+app.post("/api/donations/order",auth,async(q,s)=>{if(!pay)return s.status(503).json({error:"Razorpay keys are not configured"});let id=+q.body.campaign_id,amount=+q.body.amount;if(!db.prepare("SELECT id FROM campaigns WHERE id=? AND status='approved'").get(id)||!Number.isSafeInteger(amount)||amount<10||amount>1000000)return s.status(400).json({error:"Invalid campaign or amount"});try{let order=await pay.orders.create({amount:amount*100,currency:"INR",receipt:"fund_"+Date.now()});let r=db.prepare("INSERT INTO donations(campaign_id,user_id,donor_name,amount,message,order_id) VALUES(?,?,?,?,?,?)").run(id,q.user.id,clean(q.body.donor_name,100)||q.user.name,amount,clean(q.body.message,300),order.id);s.json({order,donation_id:r.lastInsertRowid,key_id:process.env.RAZORPAY_KEY_ID})}catch{s.status(502).json({error:"Could not create payment order"})}});
+app.post("/api/donations/verify",(q,s)=>{let b=q.body;if(!process.env.RAZORPAY_KEY_SECRET)return s.status(503).json({error:"Payments not configured"});let expected=crypto.createHmac("sha256",process.env.RAZORPAY_KEY_SECRET).update(b.razorpay_order_id+"|"+b.razorpay_payment_id).digest("hex");if(expected.length!==String(b.razorpay_signature||"").length||!crypto.timingSafeEqual(Buffer.from(expected),Buffer.from(String(b.razorpay_signature||""))))return s.status(400).json({error:"Invalid payment signature"});try{db.transaction(()=>{let d=db.prepare("SELECT * FROM donations WHERE id=? AND order_id=?").get(+b.donation_id,b.razorpay_order_id);if(!d)throw Error();if(d.status!=="paid"){db.prepare("UPDATE donations SET payment_id=?,status='paid' WHERE id=?").run(b.razorpay_payment_id,d.id);db.prepare("UPDATE campaigns SET raised=raised+? WHERE id=?").run(d.amount,d.campaign_id)}})();s.json({ok:true})}catch{s.status(400).json({error:"Donation record not found"})}});
+app.post("/api/webhooks/razorpay",(q,s)=>{let secret=process.env.RAZORPAY_WEBHOOK_SECRET;if(!secret)return s.status(503).send("Webhook not configured");let sig=q.headers["x-razorpay-signature"]||"",expected=crypto.createHmac("sha256",secret).update(q.body).digest("hex");if(sig!==expected)return s.status(400).send("Bad signature");let e=JSON.parse(q.body.toString());if(e.event==="payment.captured"){let p=e.payload.payment.entity;db.transaction(()=>{let d=db.prepare("SELECT * FROM donations WHERE order_id=?").get(p.order_id);if(d&&d.status!=="paid"){db.prepare("UPDATE donations SET payment_id=?,status='paid' WHERE id=?").run(p.id,d.id);db.prepare("UPDATE campaigns SET raised=raised+? WHERE id=?").run(d.amount,d.campaign_id)}})()}s.json({received:true})});
+app.get("/api/admin/campaigns",auth,admin,(q,s)=>s.json(db.prepare("SELECT * FROM campaigns ORDER BY id DESC").all()));
+app.patch("/api/admin/campaigns/:id",auth,admin,(q,s)=>{let st=clean(q.body.status,20);if(!["approved","rejected","pending"].includes(st))return s.status(400).json({error:"Invalid status"});let r=db.prepare("UPDATE campaigns SET status=? WHERE id=?").run(st,+q.params.id);s.json({ok:!!r.changes})});
+app.get("/api/admin/donations",auth,admin,(q,s)=>s.json(db.prepare("SELECT d.*,c.title campaign_title FROM donations d JOIN campaigns c ON c.id=d.campaign_id ORDER BY d.id DESC LIMIT 500").all()));
+app.get("*",(q,s)=>s.sendFile(path.join(__dirname,"public","index.html")));
+app.listen(PORT,()=>console.log("Digital Education Fund on http://localhost:"+PORT));
